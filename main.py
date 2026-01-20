@@ -2,7 +2,7 @@ import os
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
-from inference_sdk import InferenceHTTPClient
+from inference import InferenceHTTPClient
 from dotenv import load_dotenv
 
 # Загружаем переменные окружения
