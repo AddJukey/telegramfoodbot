@@ -284,10 +284,6 @@ def main() -> None:
         logger.error(f"Критическая ошибка при запуске: {e}", exc_info=True)
         print(f"❌ Критическая ошибка: {e}")
         raise
-        # Сохраняем ответ в файл для анализа
-with open("debug_response.json", "w") as f:
-    json.dump(result, f, indent=2)
-logger.info("Ответ сохранен в debug_response.json")
 
 if __name__ == '__main__':
     main()
