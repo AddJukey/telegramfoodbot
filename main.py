@@ -1,8 +1,8 @@
 import os
 import logging
+import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
-from inference_sdk import InferenceHTTPClient  # ИСПОЛЬЗУЕМ inference_sdk
 from dotenv import load_dotenv
 
 # Загружаем переменные окружения
@@ -30,12 +30,6 @@ print("✅ Конфигурация загружена")
 print(f"🤖 Токен бота: {TELEGRAM_BOT_TOKEN[:10]}...")
 print(f"🔑 Ключ Roboflow: {ROBOFLOW_API_KEY[:10]}...")
 print("=" * 50)
-
-# Инициализация клиента Roboflow (ОРИГИНАЛЬНЫЙ КОД из Roboflow)
-client = InferenceHTTPClient(
-    api_url="https://serverless.roboflow.com",
-    api_key=ROBOFLOW_API_KEY
-)
 
 async def start(update: Update, context: CallbackContext) -> None:
     """Обработчик команды /start"""
@@ -71,79 +65,51 @@ async def handle_photo(update: Update, context: CallbackContext) -> None:
         
         logger.info("Фото скачано, отправляю в Roboflow...")
         
-        # ОТПРАВЛЯЕМ В ROB0FLOW (ОРИГИНАЛЬНЫЙ КОД)
-        result = client.run_workflow(
-            workspace_name="kalori-lsshy",
-            workflow_id="detect-count-and-visualize",
-            images={
-                "image": image_path
-            },
-            use_cache=True
-        )
+        # 1. Прямой запрос к Roboflow API (самый простой способ)
+        with open(image_path, 'rb') as image_file:
+            files = {'file': image_file}
+            headers = {'Authorization': f'Bearer {ROBOFLOW_API_KEY}'}
+            
+            # URL для workflow - АДАПТИРУЙТЕ ПОД СВОЙ WORKFLOW!
+            # Получите правильный URL из интерфейса Roboflow
+            response = requests.post(
+                f'https://detect.roboflow.com/kalori-lsshy/detect-count-and-visualize?api_key={ROBOFLOW_API_KEY}',
+                files=files,
+                headers=headers
+            )
         
-        logger.info(f"Получен ответ от Roboflow: {result}")
+        logger.info(f"Статус ответа от Roboflow: {response.status_code}")
         
-        # Обработка результата
-        # ВАЖНО: адаптируйте под реальную структуру ответа от вашего workflow
-        if result:
-            # Попробуем разные возможные структуры ответа
-            predictions = result.get("predictions", [])
-            if not predictions and isinstance(result, list):
-                predictions = result
+        if response.status_code == 200:
+            result = response.json()
+            logger.info(f"Получен ответ от Roboflow: {result}")
+            
+            # Обработка результата
+            # Структура ответа зависит от вашей модели
+            predictions = result.get('predictions', [])
             
             if predictions:
                 total_count = len(predictions)
+                total_calories = total_count * 100  # Примерный расчет
                 
-                # Пробуем получить калории из ответа
-                total_calories = 0
-                for pred in predictions:
-                    if isinstance(pred, dict):
-                        calories = pred.get("calories", 0)
-                        if isinstance(calories, (int, float)):
-                            total_calories += calories
-                        else:
-                            total_calories += 100  # Значение по умолчанию
-                
-                # Если калории не найдены, используем приблизительный расчет
-                if total_calories == 0:
-                    total_calories = total_count * 100
-                
-                response = (
+                response_text = (
                     f"📊 Результаты анализа:\n"
                     f"• Обнаружено объектов: {total_count}\n"
                     f"• Примерная калорийность: {total_calories} ккал\n\n"
                 )
                 
-                # Добавляем детали по объектам
-                details = []
-                for i, pred in enumerate(predictions[:10], 1):  # Ограничим 10 объектами
-                    if isinstance(pred, dict):
-                        label = pred.get("class", pred.get("label", pred.get("name", "объект")))
-                        confidence = pred.get("confidence", pred.get("score", 0.0))
-                        if isinstance(confidence, (int, float)):
-                            confidence_percent = confidence * 100
-                            details.append(f"{i}. {label} ({confidence_percent:.1f}%)")
-                        else:
-                            details.append(f"{i}. {label}")
-                    else:
-                        details.append(f"{i}. Объект")
+                # Добавляем детали
+                for i, pred in enumerate(predictions[:5], 1):
+                    label = pred.get('class', 'объект')
+                    confidence = pred.get('confidence', 0) * 100
+                    response_text += f"{i}. {label} ({confidence:.1f}%)\n"
                 
-                if details:
-                    response += "🔎 Обнаруженные объекты:\n" + "\n".join(details)
-                else:
-                    response += "ℹ️ Детали объектов недоступны"
-                    
-                await update.message.reply_text(response)
+                await update.message.reply_text(response_text)
             else:
-                await update.message.reply_text(
-                    "🤔 Не удалось определить объекты на фото.\n"
-                    "Попробуй другое изображение с более четкой едой."
-                )
+                await update.message.reply_text("🤔 На фото не обнаружено объектов еды.")
         else:
-            await update.message.reply_text(
-                "⚠️ Получен пустой ответ от сервиса анализа.\n"
-                "Попробуй еще раз."
-            )
+            logger.error(f"Ошибка API: {response.status_code}, {response.text}")
+            await update.message.reply_text("⚠️ Ошибка при анализе изображения. Попробуйте еще раз.")
             
     except Exception as e:
         logger.error(f"Ошибка при обработке фото: {e}", exc_info=True)
