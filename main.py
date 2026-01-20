@@ -1,17 +1,29 @@
 import os
+import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
 from inference_sdk import InferenceHTTPClient
-import logging
+from dotenv import load_dotenv
 
-# Включите логирование для отладки
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# Загружаем переменные окружения
+load_dotenv()
+
+# Логирование
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# Конфигурация Roboflow
-ROBOFLOW_API_KEY = "pxdm5gsSa9zxNzhvq4oX"  # Замените на ваш ключ
-WORKSPACE_NAME = "kalori-lsshy"
-WORKFLOW_ID = "detect-count-and-visualize"
+# Конфигурация
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY")
+
+# Проверка токенов
+if not TELEGRAM_BOT_TOKEN:
+    raise ValueError("❌ TELEGRAM_BOT_TOKEN не установлен! Добавьте его в переменные окружения Railway.")
+if not ROBOFLOW_API_KEY:
+    raise ValueError("❌ ROBOFLOW_API_KEY не установлен! Добавьте его в переменные окружения Railway.")
 
 # Инициализация клиента Roboflow
 client = InferenceHTTPClient(
@@ -19,80 +31,124 @@ client = InferenceHTTPClient(
     api_key=ROBOFLOW_API_KEY
 )
 
-# Команда /start
 async def start(update: Update, context: CallbackContext) -> None:
+    """Обработчик команды /start"""
     await update.message.reply_text(
-        "Привет! Отправь мне фото еды, и я определю количество объектов и подсчитаю калории."
+        "🍏 Привет! Я бот для подсчета калорий.\n"
+        "Просто отправь мне фото еды, и я определю:\n"
+        "• Количество объектов\n"
+        "• Примерную калорийность\n\n"
+        "Отправь фото для анализа!"
     )
 
-# Обработка фото
 async def handle_photo(update: Update, context: CallbackContext) -> None:
+    """Обработчик фото"""
     user = update.message.from_user
-    photo_file = await update.message.photo[-1].get_file()
-    
-    # Сохраняем фото временно
-    image_path = f"temp_{user.id}.jpg"
-    await photo_file.download_to_drive(image_path)
+    logger.info(f"Пользователь {user.first_name} отправил фото")
     
     await update.message.reply_text("🔍 Анализирую изображение...")
-
+    
     try:
-        # Отправляем изображение в Roboflow
+        # Скачиваем фото
+        photo_file = await update.message.photo[-1].get_file()
+        image_path = f"temp_{user.id}.jpg"
+        await photo_file.download_to_drive(image_path)
+        
+        # Отправляем в Roboflow
         result = client.run_workflow(
-            workspace_name=WORKSPACE_NAME,
-            workflow_id=WORKFLOW_ID,
+            workspace_name="kalori-lsshy",
+            workflow_id="detect-count-and-visualize",
             images={
                 "image": image_path
             },
             use_cache=True
         )
-
-        # Извлекаем данные из результата
-        # Структура ответа зависит от вашего workflow. Пример:
-        predictions = result.get("predictions", [])
         
-        if predictions:
-            total_objects = len(predictions)
-            # Пример: если модель возвращает калории для каждого объекта
-            total_calories = sum([pred.get("calories", 0) for pred in predictions])
+        # Обработка результата
+        # ВАЖНО: адаптируйте под реальную структуру ответа от вашего workflow
+        if result and "predictions" in result:
+            predictions = result["predictions"]
             
-            response_text = (
-                f"🍽️ На фото обнаружено объектов: {total_objects}\n"
-                f"🔥 Примерная сумма калорий: {total_calories} ккал\n\n"
-                "Детали:\n"
+            # Считаем общее количество
+            total_count = len(predictions)
+            
+            # Примерная калорийность (нужно адаптировать)
+            # Здесь предполагается, что каждый объект ~100 калорий
+            total_calories = total_count * 100
+            
+            response = (
+                f"📊 Результаты анализа:\n"
+                f"• Обнаружено объектов: {total_count}\n"
+                f"• Примерная калорийность: {total_calories} ккал\n\n"
+                f"🔎 Детали:\n"
             )
             
             for i, pred in enumerate(predictions, 1):
-                label = pred.get("class", "Неизвестно")
-                confidence = pred.get("confidence", 0)
-                calories = pred.get("calories", "?")
-                response_text += f"{i}. {label} (уверенность: {confidence:.2f}) — {calories} ккал\n"
+                label = pred.get("class", "объект")
+                confidence = pred.get("confidence", 0.0) * 100
+                response += f"{i}. {label} ({confidence:.1f}%)\n"
+                
+            await update.message.reply_text(response)
+            
+            # Отправляем обработанное изображение, если есть
+            if "image" in result:
+                # Здесь можно сохранить и отправить обработанное изображение
+                pass
                 
         else:
-            response_text = "❌ На фото не удалось распознать объекты еды."
-
-        await update.message.reply_text(response_text)
-
+            await update.message.reply_text(
+                "🤔 Не удалось определить объекты на фото.\n"
+                "Попробуй другое изображение с более четкой едой."
+            )
+            
     except Exception as e:
-        logger.error(f"Ошибка при обработке изображения: {e}")
-        await update.message.reply_text("⚠️ Произошла ошибка при анализе изображения.")
-
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(
+            "⚠️ Произошла ошибка при обработке изображения.\n"
+            "Попробуй еще раз или свяжись с разработчиком."
+        )
+    
     finally:
         # Удаляем временный файл
-        if os.path.exists(image_path):
-            os.remove(image_path)
+        try:
+            if os.path.exists(image_path):
+                os.remove(image_path)
+        except:
+            pass
 
-# Основная функция
+async def help_command(update: Update, context: CallbackContext) -> None:
+    """Обработчик команды /help"""
+    await update.message.reply_text(
+        "📋 Доступные команды:\n"
+        "/start - Начать работу\n"
+        "/help - Показать справку\n\n"
+        "Просто отправьте фото еды для анализа калорий!"
+    )
+
 def main() -> None:
-    # Замените 'YOUR_TELEGRAM_BOT_TOKEN' на токен вашего бота
-    application = Application.builder().token("7810084882:AAEvk7cJLNBTu6SvXsWM-2gZdsjduraSZNc").build()
-
-    # Регистрация обработчиков
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-
-    # Запуск бота
-    application.run_polling()
+    """Запуск бота"""
+    try:
+        # Создаем приложение
+        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+        
+        # Регистрируем обработчики
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+        
+        # Логируем запуск
+        logger.info("🚀 Бот запускается...")
+        print("=" * 50)
+        print("✅ Бот успешно запущен!")
+        print(f"🤖 Используется токен: {TELEGRAM_BOT_TOKEN[:10]}...")
+        print("=" * 50)
+        
+        # Запускаем бота
+        application.run_polling()
+        
+    except Exception as e:
+        logger.error(f"Критическая ошибка при запуске: {e}")
+        raise
 
 if __name__ == '__main__':
     main()
