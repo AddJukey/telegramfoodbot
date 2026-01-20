@@ -86,7 +86,7 @@ def analyze_image_with_roboflow(image_path, api_key):
         
         if response.status_code == 200:
             result = response.json()
-            logger.info(f"Успешный ответ от Roboflow. Структура ответа: {type(result)}")
+            logger.info(f"Успешный ответ от Roboflow")
             return result
         else:
             logger.error(f"Ошибка API: {response.status_code}")
@@ -103,6 +103,7 @@ def analyze_image_with_roboflow(image_path, api_key):
 async def handle_photo(update: Update, context: CallbackContext) -> None:
     """Обработчик фото"""
     image_path = None
+    output_image_path = None
     
     try:
         user = update.message.from_user
@@ -110,40 +111,84 @@ async def handle_photo(update: Update, context: CallbackContext) -> None:
         
         await update.message.reply_text("🔍 Анализирую изображение...")
         
-        # Скачиваем фото (берем фото среднего качества для экономии трафика)
+        # Скачиваем фото
         photo_file = await update.message.photo[-1].get_file()
         image_path = f"temp_{user.id}.jpg"
         await photo_file.download_to_drive(image_path)
         
-        logger.info(f"Фото скачано: {image_path}, размер: {os.path.getsize(image_path)} байт")
+        logger.info(f"Фото скачано: {image_path}")
         
         # Анализируем изображение через Roboflow
         result = analyze_image_with_roboflow(image_path, ROBOFLOW_API_KEY)
         
         if result:
-            logger.info(f"Получен результат от Roboflow. Ключи: {result.keys() if isinstance(result, dict) else 'не dict'}")
+            logger.info(f"Получен результат от Roboflow")
             
-            # Обработка результата - адаптируйте под ваш workflow!
-            # В зависимости от структуры вашего workflow, данные могут быть в разных полях
-            
-            # Вариант 1: Если workflow возвращает предсказания напрямую
-            if "predictions" in result:
-                predictions = result["predictions"]
-                await process_predictions(update, predictions)
-            
-            # Вариант 2: Если workflow возвращает данные в другом формате
-            elif "outputs" in result:
-                outputs = result["outputs"]
-                await process_workflow_outputs(update, outputs)
-            
-            # Вариант 3: Простая проверка наличия любых данных
-            elif result:
-                await process_generic_result(update, result)
-            
+            # Обрабатываем результат
+            # Результат - это список с одним словарем
+            if isinstance(result, list) and len(result) > 0:
+                data = result[0]
+                
+                # Извлекаем количество объектов
+                count_objects = data.get("count_objects", 0)
+                
+                # Рассчитываем примерную калорийность
+                # Поскольку мы не знаем типы объектов, используем приблизительный расчет
+                estimated_calories = count_objects * 150  # Среднее значение ~150 ккал на объект
+                
+                # Формируем текстовый ответ
+                text_response = (
+                    f"📊 Результаты анализа:\n"
+                    f"• Обнаружено объектов: {count_objects}\n"
+                    f"• Примерная калорийность: {estimated_calories} ккал\n\n"
+                    f"💡 Совет: Для более точного расчета калорий "
+                    f"настройте workflow для определения типов еды."
+                )
+                
+                # Проверяем наличие обработанного изображения
+                if "output_image" in data:
+                    output_image = data["output_image"]
+                    if output_image.get("type") == "base64":
+                        base64_value = output_image.get("value", "")
+                        
+                        if base64_value:
+                            # Декодируем base64 изображение
+                            try:
+                                # Убедимся, что строка base64 корректна
+                                # Иногда нужно добавить padding
+                                missing_padding = len(base64_value) % 4
+                                if missing_padding:
+                                    base64_value += '=' * (4 - missing_padding)
+                                
+                                image_data = base64.b64decode(base64_value)
+                                
+                                # Сохраняем декодированное изображение
+                                output_image_path = f"output_{user.id}.jpg"
+                                with open(output_image_path, "wb") as f:
+                                    f.write(image_data)
+                                
+                                logger.info(f"Обработанное изображение сохранено: {output_image_path}")
+                                
+                                # Отправляем обработанное изображение с подписью
+                                with open(output_image_path, "rb") as photo_file:
+                                    await update.message.reply_photo(
+                                        photo=photo_file,
+                                        caption=text_response
+                                    )
+                                
+                            except Exception as e:
+                                logger.error(f"Ошибка при декодировании изображения: {e}")
+                                await update.message.reply_text(text_response)
+                        else:
+                            await update.message.reply_text(text_response)
+                    else:
+                        await update.message.reply_text(text_response)
+                else:
+                    await update.message.reply_text(text_response)
             else:
                 await update.message.reply_text(
-                    "🤔 Не удалось определить объекты на фото.\n"
-                    "Попробуйте другое изображение с более четкой едой."
+                    "⚠️ Неожиданный формат ответа от Roboflow.\n"
+                    "Попробуйте еще раз или проверьте настройки workflow."
                 )
         else:
             await update.message.reply_text(
@@ -159,106 +204,14 @@ async def handle_photo(update: Update, context: CallbackContext) -> None:
         )
     
     finally:
-        # Удаляем временный файл
-        if image_path and os.path.exists(image_path):
-            try:
-                os.remove(image_path)
-                logger.info(f"Временный файл удален: {image_path}")
-            except Exception as e:
-                logger.error(f"Ошибка при удалении файла: {e}")
-
-async def process_predictions(update, predictions):
-    """Обработка предсказаний от модели"""
-    if isinstance(predictions, list) and len(predictions) > 0:
-        total_count = len(predictions)
-        
-        # Считаем примерную калорийность
-        total_calories = 0
-        details = []
-        
-        for i, pred in enumerate(predictions[:10], 1):  # Ограничим 10 объектами
-            if isinstance(pred, dict):
-                label = pred.get("class", pred.get("label", "объект"))
-                confidence = pred.get("confidence", 0)
-                
-                # Примерные калории по типу объекта
-                calories = estimate_calories_by_label(label)
-                total_calories += calories
-                
-                if isinstance(confidence, (int, float)):
-                    details.append(f"{i}. {label} ({confidence:.1%}) - ~{calories} ккал")
-                else:
-                    details.append(f"{i}. {label} - ~{calories} ккал")
-        
-        # Если не нашли калорий в предсказаниях, используем приблизительный расчет
-        if total_calories == 0:
-            total_calories = total_count * 100  # 100 ккал на объект по умолчанию
-        
-        response = (
-            f"📊 Результаты анализа:\n"
-            f"• Обнаружено объектов: {total_count}\n"
-            f"• Примерная калорийность: {total_calories} ккал\n\n"
-        )
-        
-        if details:
-            response += "🔎 Обнаруженные объекты:\n" + "\n".join(details)
-        
-        await update.message.reply_text(response)
-    else:
-        await update.message.reply_text("🤔 На фото не обнаружено объектов еды.")
-
-async def process_workflow_outputs(update, outputs):
-    """Обработка выходных данных workflow"""
-    # Адаптируйте эту функцию под структуру вашего workflow
-    # Например, если workflow возвращает изображение с аннотациями и данные
-    
-    # Простой вывод JSON для отладки
-    output_str = json.dumps(outputs, ensure_ascii=False, indent=2)[:1000]  # Ограничим длину
-    
-    await update.message.reply_text(
-        f"📋 Получены данные от workflow:\n"
-        f"```json\n{output_str}\n```\n\n"
-        f"Для настройки вывода проверьте структуру данных вашего workflow.",
-        parse_mode='Markdown'
-    )
-
-async def process_generic_result(update, result):
-    """Обработка общего результата"""
-    # Для отладки: покажем структуру ответа
-    if isinstance(result, dict):
-        result_keys = list(result.keys())
-        await update.message.reply_text(
-            f"📋 Получен ответ от Roboflow.\n"
-            f"Ключи в ответе: {', '.join(result_keys)}\n\n"
-            f"Для настройки вывода адаптируйте код под структуру вашего workflow."
-        )
-    else:
-        await update.message.reply_text(
-            f"📋 Получен ответ от Roboflow.\n"
-            f"Тип ответа: {type(result)}\n\n"
-            f"Для настройки вывода адаптируйте код под структуру вашего workflow."
-        )
-
-def estimate_calories_by_label(label):
-    """Оценка калорийности по метке объекта"""
-    # Добавьте свои правила для определения калорий
-    label_lower = label.lower()
-    
-    calorie_map = {
-        "apple": 95, "banana": 105, "orange": 62, "bread": 79, "cheese": 113,
-        "egg": 78, "chicken": 335, "fish": 206, "rice": 130, "pasta": 157,
-        "potato": 163, "tomato": 22, "cucumber": 16, "carrot": 41, "broccoli": 55,
-        "pizza": 285, "burger": 354, "fries": 365, "salad": 150, "soup": 100,
-        "cake": 235, "chocolate": 546, "ice cream": 207, "yogurt": 149, "milk": 103
-    }
-    
-    # Поиск по частичному совпадению
-    for key, calories in calorie_map.items():
-        if key in label_lower:
-            return calories
-    
-    # Если не нашли, возвращаем среднее значение
-    return 100
+        # Удаляем временные файлы
+        for file_path in [image_path, output_image_path]:
+            if file_path and os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                    logger.info(f"Временный файл удален: {file_path}")
+                except Exception as e:
+                    logger.error(f"Ошибка при удалении файла {file_path}: {e}")
 
 def main() -> None:
     """Запуск бота"""
