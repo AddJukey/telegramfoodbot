@@ -189,7 +189,10 @@ async def process_predictions(update, predictions):
                     details.append(f"{i}. {label} ({confidence:.1%}) - ~{calories} ккал")
                 else:
                     details.append(f"{i}. {label} - ~{calories} ккал")
-        
+        # Сохраняем ответ в файл для анализа
+with open("debug_response.json", "w") as f:
+    json.dump(result, f, indent=2)
+logger.info("Ответ сохранен в debug_response.json")
         # Если не нашли калорий в предсказаниях, используем приблизительный расчет
         if total_calories == 0:
             total_calories = total_count * 100  # 100 ккал на объект по умолчанию
